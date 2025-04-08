@@ -1,0 +1,105 @@
+version: '3.8'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0 # Use a specific stable version
+    container_name: zookeeper
+    hostname: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ['CMD', 'echo', 'ruok', '|', 'nc', 'localhost', '2181']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kafka-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0 # Use a specific stable version
+    container_name: kafka
+    hostname: kafka
+    ports:
+      # Expose Kafka broker for external connections (e.g., from your host machine)
+      - "9092:9092"
+      # Port used for inter-broker communication and within Docker network
+      # - "29092:29092" # Uncomment if needed for complex setups
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      # Listeners configuration:
+      # LISTENER_INTERNAL: Used for communication within the Docker network
+      # LISTENER_EXTERNAL: Used for communication from outside the Docker network (your host)
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: LISTENER_INTERNAL:PLAINTEXT,LISTENER_EXTERNAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: LISTENER_INTERNAL://kafka:29092,LISTENER_EXTERNAL://localhost:9092
+      KAFKA_LISTENERS: LISTENER_INTERNAL://0.0.0.0:29092,LISTENER_EXTERNAL://0.0.0.0:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: LISTENER_INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1 # For single node cluster
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true' # Auto-create topics if needed
+      KAFKA_CREATE_TOPICS: "ingest-topic:1:1" # Alternatively, explicitly create topics
+    healthcheck:
+       test: ["CMD-SHELL", "/usr/bin/kafka-topics --bootstrap-server localhost:29092 --list || exit 1"]
+       interval: 15s
+       timeout: 10s
+       retries: 10
+    networks:
+      - kafka-net
+
+  postgres:
+    image: postgres:15-alpine # Use a specific stable version
+    container_name: postgres_db
+    hostname: postgres
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password # Use secrets in production!
+      POSTGRES_DB: ingestdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      # Optional: Mount init scripts to create tables/keys on startup
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d ingestdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kafka-net
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ingest_api
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy # Wait for Kafka to be somewhat ready
+    environment:
+      LISTEN_ADDRESS: ":8080"
+      POSTGRES_URL: "postgres://user:password@postgres:5432/ingestdb?sslmode=disable" # Use secrets!
+      KAFKA_BROKERS: "kafka:29092" # Internal listener for app <-> kafka communication
+      KAFKA_TOPIC: "ingest-topic" # Make sure this topic exists or auto-creation is enabled
+      API_KEY_TABLE_NAME: "api_keys"
+    restart: unless-stopped
+    networks:
+      - kafka-net
+
+networks:
+  kafka-net:
+    driver: bridge
+
+volumes:
+  pg_data:
+    driver: local

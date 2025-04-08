@@ -1,0 +1,62 @@
+server:
+  port: 8090 # Different port than the Go service
+
+spring:
+  application:
+    name: clickhouse-ingest-service
+
+  # Kafka Consumer Configuration
+  kafka:
+    bootstrap-servers: ${KAFKA_BROKERS:localhost:9092} # Get from env var or default
+    consumer:
+      group-id: clickhouse-ingest-group # Unique consumer group ID
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer # Consume raw JSON strings
+      auto-offset-reset: earliest # Start consuming from the beginning if no offset found
+      properties:
+        # Optional: Adjust isolation level if needed (read_committed requires transactional producer)
+        # isolation.level: read_committed
+        # Optional: Increase poll timeout if processing takes longer
+        # max.poll.interval.ms: 600000 # 10 minutes
+        fetch.min.bytes: 1
+        fetch.max.wait.ms: 500
+    listener:
+      # Enable batch listening
+      type: batch
+      # Number of concurrent consumers (threads) processing partitions for the topic
+      concurrency: ${KAFKA_CONSUMER_CONCURRENCY:1}
+      # Optional: Adjust ack mode if needed (default is BATCH)
+      # ack-mode: BATCH
+
+  # ClickHouse DataSource Configuration
+  datasource:
+    clickhouse: # Custom namespace to avoid conflict if using other datasources
+      # Get from env var or default (use 'clickhouse' hostname from docker-compose)
+      url: jdbc:clickhouse://${CLICKHOUSE_HOST:localhost}:${CLICKHOUSE_PORT:8123}/${CLICKHOUSE_DATABASE:default}?${CLICKHOUSE_PARAMS:} # JDBC URL
+      username: ${CLICKHOUSE_USER:default}
+      password: ${CLICKHOUSE_PASSWORD:} # Provide password via env var or keep empty if none
+      driver-class-name: com.clickhouse.jdbc.ClickHouseDriver # For the newer com.clickhouse driver
+      # driver-class-name: ru.yandex.clickhouse.ClickHouseDriver # For the older ru.yandex driver
+      # Optional connection pool settings (using HikariCP by default via spring-boot-starter-jdbc)
+      hikari:
+        maximum-pool-size: ${CLICKHOUSE_POOL_SIZE:10}
+        connection-timeout: 30000 # 30 seconds
+        idle-timeout: 600000 # 10 minutes
+        max-lifetime: 1800000 # 30 minutes
+
+# Application Specific Properties
+app:
+  kafka:
+    ingest-topic: ${KAFKA_INGEST_TOPIC:ingest-topic}
+  clickhouse:
+    ingest-table: ${CLICKHOUSE_INGEST_TABLE:ingest_data} # Target ClickHouse table name
+    batch-size: ${CLICKHOUSE_BATCH_SIZE:100} # Number of records to batch insert
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "health,info,prometheus" # Expose useful actuator endpoints
+  endpoint:
+    health:
+      show-details: when_authorized
