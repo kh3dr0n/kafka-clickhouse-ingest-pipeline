@@ -1,18 +1,26 @@
 package com.yourcompany.kafka.clickhouse.config
-
-import arrow.core.computations.ResultEffect.bind
-import arrow.core.getOrElse
-import arrow.core.recover
-import arrow.core.flatMap
 import arrow.core.Either
+import arrow.core.computations.ResultEffect // <--- Or similar Effect type if you use Result
+import arrow.core.flatMap // Ensure flatMap is imported if needed explicitly
+import arrow.core.continuations.either // <--- Import the either computation builder
 import arrow.core.left
+import arrow.core.raise.either
 import arrow.core.right
+import java.lang.NumberFormatException // Example exception
 
+// Define your ConfigError sealed class/interface (if not already done)
+sealed interface ConfigError {
+    data class MissingEnvVar(val name: String) : ConfigError
+    data class InvalidValue(val name: String, val value: String, val reason: String) : ConfigError
+    data class Other(val message: String, val cause: Throwable? = null) : ConfigError
+}
+
+// Define your AppConfig and nested Config classes (if not already done)
 data class KafkaConfig(
     val brokers: String,
     val topic: String,
     val groupId: String,
-    val pollTimeoutMs: Long = 1000L, // How long to wait in poll()
+    val pollTimeoutMs: Long,
     val autoOffsetReset: String = "earliest"
 )
 
@@ -21,7 +29,8 @@ data class ClickHouseConfig(
     val user: String,
     val pass: String,
     val database: String,
-    val tableName: String = "ingested_data" // Default table name
+    val tableName: String
+    // Add other ClickHouse settings as needed
 )
 
 data class AppConfig(
@@ -29,40 +38,45 @@ data class AppConfig(
     val clickhouse: ClickHouseConfig
 )
 
-// Helper to read env vars or provide default
-private fun env(key: String, default: String? = null): Either<ConfigError, String> =
-    System.getenv(key)?.right() ?: default?.right() ?: ConfigError.MissingEnvVar(key).left()
 
-sealed class ConfigError(val message: String) {
-    data class MissingEnvVar(val key: String) : ConfigError("Missing environment variable: $key")
-    data class InvalidValue(val key: String, val value: String, val reason: String) :
-        ConfigError("Invalid value for $key ('$value'): $reason")
-}
+// --- Helper function to read env vars into Either ---
+// This is crucial for the `either` block to work
+fun env(name: String): Either<ConfigError, String> =
+    System.getenv(name)?.right() ?: ConfigError.MissingEnvVar(name).left()
+
+// Overload for default values (always returns Right as default is provided)
+fun env(name: String, default: String): Either<ConfigError, String> =
+    (System.getenv(name) ?: default).right() // No Left case if default exists
 
 
-// Load configuration using Arrow Result (Either)
-fun loadConfig(): Either<ConfigError, AppConfig> = Either.catch {
-    arrow.core.computations.result<ConfigError, AppConfig> { // Use result computation block
-        val kafkaBrokers = env("KAFKA_BROKERS").bind()
+// --- Your loadConfig function using the `either` builder ---
+fun loadConfig(): Either<ConfigError, AppConfig> =
+    either {
+        // Now you are inside the EitherEffect scope where .bind() exists
+
+        val kafkaBrokers = env("KAFKA_BROKERS").bind() // bind() works now!
         val kafkaTopic = env("KAFKA_TOPIC").bind()
-        val kafkaGroupId = env("KAFKA_GROUP_ID", "kotlin-consumer-group").bind() // Default group id
-        val kafkaPollTimeout = env("KAFKA_POLL_TIMEOUT_MS", "1000").bind()
-            .flatMap { it.toLongOrNull()?.right() ?: ConfigError.InvalidValue("KAFKA_POLL_TIMEOUT_MS", it, "Not a number").left() }
-            .bind()
+        val kafkaGroupId = env("KAFKA_GROUP_ID", "kotlin-consumer-group").bind()
 
-        val chJdbcUrl = env("CLICKHOUSE_JDBC_URL").bind() // e.g., jdbc:ch://localhost:8123/default
+        // --- Handle parsing within the block ---
+        val kafkaPollTimeoutStr = env("KAFKA_POLL_TIMEOUT_MS", "1000").bind()
+        val kafkaPollTimeout = (kafkaPollTimeoutStr.toLongOrNull()?.right() // Attempt parsing
+            ?: // If null (parsing failed), create a Left
+            1000L.right()).bind() // bind() to short-circuit on error
+
+        val chJdbcUrl = env("CLICKHOUSE_JDBC_URL").bind()
         val chUser = env("CLICKHOUSE_USER", "default").bind()
-        val chPass = env("CLICKHOUSE_PASSWORD", "").bind() // Default empty password
+        val chPass = env("CLICKHOUSE_PASSWORD", "").bind() // Reads "" if env var missing/empty
         val chDb = env("CLICKHOUSE_DATABASE", "default").bind()
         val chTable = env("CLICKHOUSE_TABLE", "ingested_data").bind()
 
+        // The last expression in the block is the success value (Right)
         AppConfig(
             kafka = KafkaConfig(
                 brokers = kafkaBrokers,
                 topic = kafkaTopic,
                 groupId = kafkaGroupId,
-                pollTimeoutMs = kafkaPollTimeout,
-                // autoOffsetReset can be configured via env var too if needed
+                pollTimeoutMs = kafkaPollTimeout
             ),
             clickhouse = ClickHouseConfig(
                 jdbcUrl = chJdbcUrl,
@@ -72,8 +86,4 @@ fun loadConfig(): Either<ConfigError, AppConfig> = Either.catch {
                 tableName = chTable
             )
         )
-    }.bind() // Extract the value from the result block
-}.mapLeft { throwable ->
-    // Catch potential exceptions during env var access or parsing that weren't handled by Either
-    ConfigError.InvalidValue("Unknown", "Unknown", throwable.message ?: "Unknown loading error")
-}
+    } // No need for mapLeft with 'either', errors are handled by binds short-circuiting

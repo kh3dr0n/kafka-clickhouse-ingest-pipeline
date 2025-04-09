@@ -45,6 +45,7 @@ dependencies {
 
     // Testing - JUnit 5, AssertJ, MockK, Testcontainers
     testImplementation(kotlin("test"))
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
     testImplementation("org.junit.jupiter:junit-jupiter-api:5.10.1")
     testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:5.10.1")
     testImplementation("org.assertj:assertj-core:3.24.2")
@@ -78,6 +79,28 @@ tasks.withType<ShadowJar> {
     manifest {
         attributes(mapOf("Main-Class" to application.mainClass.get()))
     }
+}
+
+// You usually don't strictly NEED these dependsOn if the classifier is "" and jar disabled.
+tasks.distZip {
+    dependsOn(tasks.shadowJar)
+    // The application plugin should now automatically include the shadowJar output
+}
+
+tasks.distTar {
+    dependsOn(tasks.shadowJar)
+    // The application plugin should now automatically include the shadowJar output
+}
+
+tasks.startScripts {
+    dependsOn(tasks.shadowJar)
+    // The application plugin should configure the script to use the shadowJar
+    // You can optionally override the classpath if needed, but usually not required with "" classifier:
+    // classpath = files(tasks.shadowJar.get().archiveFile)
+}
+
+tasks.jar {
+    enabled = false // Keep this disabled
 }
 
 // Ensure shadowJar runs when building

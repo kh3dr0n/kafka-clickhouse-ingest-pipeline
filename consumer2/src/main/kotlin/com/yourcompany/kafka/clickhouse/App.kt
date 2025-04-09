@@ -23,7 +23,7 @@ fun main(): Unit = runBlocking { // Use runBlocking for the main entry point
         // Perform any additional validation if needed
         cfg.right() // Keep it Either<ConfigError, AppConfig>
     }.getOrElse { error ->
-        logger.error("Failed to load configuration: ${error.message}")
+        logger.error("Failed to load configuration: ${error}")
         exitProcess(1) // Exit if config fails
     }
 
