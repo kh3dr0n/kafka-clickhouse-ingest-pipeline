@@ -10,7 +10,35 @@ A simple Go HTTP service that accepts JSON payloads, validates an API key agains
 *   Validates that the request body is valid JSON.
 *   Publishes the raw JSON payload to a configured Kafka topic.
 *   Includes Dockerfile and Docker Compose setup for easy deployment.
-*   Includes unit/integration tests for the API handler.
+*   In-memory LRU caching for API key validation results to reduce database load (configurable).
+
+## Configuration
+
+The application uses environment variables:
+
+| Variable             | Description                                         | Default       | Required | Example                                                      |
+| :------------------- | :-------------------------------------------------- | :------------ | :------- | :----------------------------------------------------------- |
+| `LISTEN_ADDRESS`     | Address and port to listen on                       | `:8080`       | No       | `:8080`                                                      |
+| `POSTGRES_URL`       | PostgreSQL connection URL                           |               | Yes      | `postgres://user:password@host:5432/dbname?sslmode=disable` |
+| `KAFKA_BROKERS`      | Comma-separated list of Kafka broker addresses      |               | Yes      | `kafka1:9092,kafka2:9092`                                    |
+| `KAFKA_TOPIC`        | Kafka topic to publish messages to                  |               | Yes      | `ingest-topic`                                               |
+| `API_KEY_TABLE_NAME` | Name of the table storing API keys                  | `api_keys`    | No       | `api_keys`                                                   |
+| `AUTH_CACHE_ENABLED` | Enable (`true`) or disable (`false`) API key cache | `true`        | No       | `true`                                                       |
+| `AUTH_CACHE_SIZE`    | Maximum number of entries in the API key cache      | `1000`        | No       | `5000`                                                       |
+| `AUTH_CACHE_TTL`     | Time-to-live for cached API key entries             | `5m` (5 mins) | No       | `10m`, `1h`                                                  |
+
+**Important:** Use secure methods ... (rest of security note) ...
+
+## Setup and Running
+... (rest of setup) ...
+
+## Caching Behavior
+
+*   When `AUTH_CACHE_ENABLED` is `true`, the service uses an in-memory LRU (Least Recently Used) cache.
+*   Successful validation results (both valid and invalid keys found in the DB) are cached.
+*   Database errors during validation are *not* cached.
+*   Cached entries expire after `AUTH_CACHE_TTL` to mitigate issues with stale data (e.g., if a key is deactivated in the database, the cache will eventually reflect this after the TTL expires).
+*   If the cache reaches `AUTH_CACHE_SIZE`, the least recently used entry is evicted.
 
 ## Prerequisites
 
@@ -43,7 +71,7 @@ A simple Go HTTP service that accepts JSON payloads, validates an API key agains
     *   **To add an API key:** Connect to the database (e.g., using `psql` or a GUI tool) and insert a key:
         ```sql
         -- Connect via docker compose:
-        -- docker compose exec -it postgres_db psql -U user -d ingestdb
+        -- docker compose exec -it postgres psql -U user -d ingestdb
 
         -- Inside psql:
         INSERT INTO api_keys (api_key, description, is_active) VALUES ('your-secret-api-key', 'Key for my client', TRUE);

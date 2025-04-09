@@ -2,6 +2,7 @@ package config
 
 import (
 	"log"
+	"time" // Import time package
 
 	"github.com/kelseyhightower/envconfig"
 )
@@ -13,6 +14,10 @@ type Config struct {
 	KafkaBrokers    string `envconfig:"KAFKA_BROKERS" required:"true"` // Comma-separated list
 	KafkaTopic      string `envconfig:"KAFKA_TOPIC" required:"true"`
 	APIKeyTableName string `envconfig:"API_KEY_TABLE_NAME" default:"api_keys"`
+	// New Cache Config
+	AuthCacheEnabled bool          `envconfig:"AUTH_CACHE_ENABLED" default:"true"`
+	AuthCacheSize    int           `envconfig:"AUTH_CACHE_SIZE" default:"10000"` // Max number of keys to cache
+	AuthCacheTTL     time.Duration `envconfig:"AUTH_CACHE_TTL" default:"60m"`    // How long cache entries are valid
 }
 
 // LoadConfig loads configuration from environment variables

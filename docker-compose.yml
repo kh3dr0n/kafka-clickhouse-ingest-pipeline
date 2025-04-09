@@ -65,7 +65,7 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
       # Optional: Mount init scripts to create tables/keys on startup
-      - ./migrations:/docker-entrypoint-initdb.d
+      - publisher/migrations:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U user -d ingestdb"]
       interval: 10s
@@ -92,6 +92,9 @@ services:
       KAFKA_BROKERS: "kafka:29092" # Internal listener for app <-> kafka communication
       KAFKA_TOPIC: "ingest-topic" # Make sure this topic exists or auto-creation is enabled
       API_KEY_TABLE_NAME: "api_keys"
+      AUTH_CACHE_ENABLED: true     # Enable caching
+      AUTH_CACHE_SIZE: "1000"      # Max 1000 keys in cache
+      AUTH_CACHE_TTL: "5m"         # Cache entries valid for 5 minutes
     restart: unless-stopped
     networks:
       - kafka-net

@@ -19,7 +19,6 @@ import (
 )
 
 func main() {
-	log.Println("Starting application...")
 	// Load Configuration
 	cfg, err := config.LoadConfig()
 	if err != nil {
@@ -31,9 +30,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
-	defer db.Close() // Ensure DB pool is closed on exit
+	defer db.Close()
 
-	// Ping DB to ensure connectivity
 	if err := db.Ping(context.Background()); err != nil {
 		log.Fatalf("Failed to ping database: %v", err)
 	}
@@ -43,21 +41,35 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create Kafka publisher: %v", err)
 	}
-	// *** IMPORTANT: This defer ensures Close is called on normal exit, panic, OR after graceful shutdown sequence completes ***
 	defer func() {
-		log.Println("Executing deferred Kafka publisher close...")
 		if err := publisher.Close(); err != nil {
-			log.Printf("Error during deferred Kafka publisher close: %v", err)
-		} else {
-			log.Println("Deferred Kafka publisher close completed.")
+			log.Printf("Error closing Kafka publisher: %v", err)
 		}
 	}()
 
-	// Setup Authenticator
-	authenticator := auth.NewPostgresAuthenticator(db.Pool, cfg.APIKeyTableName)
+	// Setup Authenticator Chain
+	// 1. Create the base authenticator (Postgres)
+	var baseAuthenticator auth.Authenticator
+	baseAuthenticator = auth.NewPostgresAuthenticator(db.Pool, cfg.APIKeyTableName)
 
-	// Setup API Handler
-	apiHandler := api.NewAPIHandler(authenticator, publisher)
+	// 2. Optionally wrap with the Caching Authenticator
+	var finalAuthenticator auth.Authenticator
+	if cfg.AuthCacheEnabled {
+		cachingAuth, err := auth.NewCachingAuthenticator(baseAuthenticator, cfg.AuthCacheSize, cfg.AuthCacheTTL)
+		if err != nil {
+			// Decide how to handle cache init errors: log and continue without cache, or fail fast?
+			log.Printf("WARNING: Failed to initialize auth cache: %v. Proceeding without caching.", err)
+			finalAuthenticator = baseAuthenticator // Fallback to base
+		} else {
+			finalAuthenticator = cachingAuth // Use the caching layer
+		}
+	} else {
+		log.Println("API key auth cache is disabled via configuration.")
+		finalAuthenticator = baseAuthenticator // Caching explicitly disabled
+	}
+
+	// Setup API Handler (pass the final authenticator, which might be cached or not)
+	apiHandler := api.NewAPIHandler(finalAuthenticator, publisher)
 
 	// Setup Router
 	router := mux.NewRouter()
@@ -67,7 +79,7 @@ func main() {
 		w.Write([]byte("OK\n"))
 	}).Methods(http.MethodGet)
 
-	// Setup HTTP Server
+	// Setup HTTP Server (rest is the same)
 	server := &http.Server{
 		Addr:         cfg.ListenAddress,
 		Handler:      router,
@@ -76,7 +88,6 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Start Server in a Goroutine
 	go func() {
 		log.Printf("Server starting on %s", cfg.ListenAddress)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -84,31 +95,17 @@ func main() {
 		}
 	}()
 
-	// --- Graceful Shutdown Handling ---
 	quit := make(chan os.Signal, 1)
-	// Notify about SIGINT (Ctrl+C) and SIGTERM (sent by Docker/Kubernetes)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	log.Println("Application started. Waiting for shutdown signal...")
+	<-quit
+	log.Println("Shutting down server...")
 
-	// Block until a signal is received
-	sig := <-quit
-	log.Printf("Received signal: %s. Starting graceful shutdown...", sig)
-
-	// Create a context with timeout for shutdown
-	// Give enough time for active requests AND Kafka flushing
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second) // Increased timeout slightly
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Attempt graceful shutdown of the HTTP server (stops accepting new requests, waits for active ones)
-	log.Println("Shutting down HTTP server...")
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("HTTP server shutdown error: %v", err)
-	} else {
-		log.Println("HTTP server gracefully stopped.")
+	if err := server.Shutdown(ctx); err != nil {
+		log.Fatalf("Server forced to shutdown: %v", err)
 	}
 
-	// *** Publisher Close is handled by the defer statement above when main exits ***
-	// No need to explicitly call publisher.Close() here again.
-
-	log.Println("Shutdown sequence complete. Exiting.")
+	log.Println("Server exiting")
 }
