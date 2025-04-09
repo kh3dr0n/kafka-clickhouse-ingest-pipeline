@@ -1,0 +1,105 @@
+version: '3.8'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    hostname: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - app-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    hostname: kafka
+    ports:
+      - "9092:9092" # External access if needed from host
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: LISTENER_INTERNAL:PLAINTEXT,LISTENER_EXTERNAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: LISTENER_INTERNAL://kafka:29092,LISTENER_EXTERNAL://localhost:9092
+      KAFKA_LISTENERS: LISTENER_INTERNAL://0.0.0.0:29092,LISTENER_EXTERNAL://0.0.0.0:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: LISTENER_INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      # Ensure the topic from the Go service exists
+      KAFKA_CREATE_TOPICS: "ingest-topic:1:1"
+    networks:
+      - app-net
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest # Or specific version e.g., 23.8
+    container_name: clickhouse_db
+    hostname: clickhouse
+    ports:
+      - "8123:8123" # HTTP interface
+      - "9000:9000" # Native TCP interface
+    environment:
+      # Default user is 'default' with no password
+      # CLICKHOUSE_USER: user # Optional: Set user/pass/db if needed
+      # CLICKHOUSE_PASSWORD: password
+      CLICKHOUSE_DB: default # Or create a specific one
+    volumes:
+      # Mount init script to create table on startup
+      - ./src/test/resources/init-clickhouse.sql:/docker-entrypoint-initdb.d/init.sql
+      # Optional: Persist data
+      - clickhouse_data:/var/lib/clickhouse
+    ulimits: # Recommended for ClickHouse
+      nofile:
+        soft: 262144
+        hard: 262144
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # The Kotlin Consumer Application
+  app-consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kotlin_consumer
+    depends_on:
+      kafka:
+        condition: service_started # Basic check, Kafka healthcheck is better
+      clickhouse:
+        condition: service_healthy # Wait for ClickHouse healthcheck
+    environment:
+      # Kafka Config
+      KAFKA_BROKERS: "kafka:29092" # Internal listener
+      KAFKA_TOPIC: "ingest-topic" # MUST match the producer's topic
+      KAFKA_GROUP_ID: "clickhouse-inserter-group" # Consumer group ID
+      # KAFKA_POLL_TIMEOUT_MS: 1000 # Optional: Override default
+
+      # ClickHouse Config (using default user/pass/db defined in clickhouse service)
+      CLICKHOUSE_JDBC_URL: "jdbc:clickhouse://clickhouse:8123/default" # Use service name, HTTP port
+      # CLICKHOUSE_USER: "default" # Default
+      # CLICKHOUSE_PASSWORD: ""    # Default
+      CLICKHOUSE_DATABASE: "default" # DB name included in URL is often enough
+      CLICKHOUSE_TABLE: "ingested_data" # Table name (must match init script)
+
+      # Optional: Java options for tuning
+      # JAVA_OPTS: "-Xmx512m -Xms256m"
+    restart: unless-stopped
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    driver: bridge
+
+volumes:
+  clickhouse_data:
+    driver: local
